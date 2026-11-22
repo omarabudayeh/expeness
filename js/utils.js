@@ -78,7 +78,15 @@ export function debounce(fn, ms = 200) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-export function download(filename, text, type = 'application/json') {
+/** Save a file. Inside claude.ai the page must ask the viewer through the `downloads` capability. */
+export async function download(filename, text, type = 'application/json') {
+  const rt = globalThis.claude;
+  if (rt?.use) {
+    const d = await rt.use('downloads').catch(() => null);
+    if (d) {
+      try { await d.save({ filename, data: text }); return true; } catch (e) { if (e?.code === 'declined') return false; throw e; }
+    }
+  }
   const blob = new Blob([text], { type });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -86,6 +94,7 @@ export function download(filename, text, type = 'application/json') {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  return true;
 }
 
 export const lsGet = (k, fallback = null) => {

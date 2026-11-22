@@ -40,7 +40,25 @@ A simple, private app for two people (you and your wife) to see **where the mone
 
 ---
 
-## Use it together with your wife (one-time setup, about 15 minutes)
+## Use it together with your wife: the easy way (no setup)
+
+The app is published as a private page on claude.ai with its own shared database:
+**https://claude.ai/artifact/RomH6sxqkeP6QSdVVrCzHu**
+
+1. Open the link and fill in the short setup (both names, currency, account balances).
+2. Click **Share** at the top of the page, invite your wife's email, and choose **Editor**.
+3. She opens the link on her phone, signs in to claude.ai (a free account is enough), and picks her name when the app asks "Who are you?".
+
+That's it. You both see and edit the same budget live. Only people you share the page with can open it.
+On a phone, open the link in the Claude app or in the browser; in the browser you can also use **Add to Home Screen**.
+
+To publish a new version after changing the code: `python3 tools/build-artifact.py` and publish `dist/home-budget.html` to the same claude.ai page.
+
+---
+
+## Alternative: your own Firebase + GitHub Pages (one-time setup, about 15 minutes)
+
+Use this only if you'd rather not use claude.ai. It also works offline.
 
 Without this step the app still works, but it saves data only on the phone/browser where you use it.
 To **share one budget on both phones**, connect it to a free Google Firebase project:
@@ -111,6 +129,8 @@ Already used the app before connecting Firebase? Open **⚙ Settings → Upload 
 ## Tech notes
 
 - Plain HTML, CSS and JavaScript (ES modules). No build step and no dependencies to install. Firebase SDK v10 is loaded from Google's CDN only when `js/config.js` has a config.
+- Three storage modes, picked automatically: the claude.ai shared database when the page runs on claude.ai (`ArtifactBackend` in `js/store.js`), Firebase when `js/config.js` has a config, otherwise this device only.
+- On claude.ai the data is stored as `app/{accounts,categories,budgets,meta}` and one `months/<YYYY-MM>` document per month, each holding `{ items: { <id>: record } }`. Saves merge one item at a time, so two people saving at once don't overwrite each other.
 - Data model (Firestore: `households/<householdId>/<collection>/<id>`):
   - `accounts`: `{ name, type: bank|savings|credit|cash|support, openingBalance, limit, goal, repay }`. The current balance = opening balance + all transactions (credit cards are negative when money is owed).
   - `categories`: `{ name, icon, kind: expense|income }`

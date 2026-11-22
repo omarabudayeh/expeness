@@ -120,3 +120,106 @@ class Store {
 }
 
 export const store = new Store();
+
+// ── claude.ai shared database (when the app is published as a claude.ai page) ──
+// Layout, chosen to stay small and merge-safe when both of you edit at once:
+//   app/accounts, app/categories, app/budgets, app/meta  → { items: { <id>: doc } }
+//   months/<YYYY-MM>                                     → { items: { <txId>: tx } }
+// Writes merge one item at a time, so two people saving at once never overwrite each other.
+// A deleted item is stored as null and skipped when reading.
+const APP_DOCS = ['accounts', 'categories', 'budgets', 'meta'];
+
+export class ArtifactBackend {
+  constructor(db, userApi) {
+    this.mode = 'shared';
+    this.db = db;
+    this.userApi = userApi;
+    this.chains = new Map();
+    this.onStatus = () => {};
+  }
+
+  async start(onData) {
+    this.uid = (await this.userApi?.id?.()) || null;
+    this.canWrite = await this.userApi?.can?.('data.write');
+    const state = {};
+    COLLECTIONS.forEach((c) => (state[c] = {}));
+    this.state = state;
+    const items = (snapDoc) => {
+      const out = {};
+      const raw = snapDoc.data()?.items || {};
+      for (const [id, v] of Object.entries(raw)) if (v) out[id] = v;
+      return out;
+    };
+    let gotApp = false, gotMonths = false, settled = false;
+    const emit = () => { if (gotApp && gotMonths) onData({ ...state }); };
+
+    await new Promise((resolve, reject) => {
+      const done = (err) => { if (settled) return; settled = true; clearTimeout(timer); err ? reject(err) : resolve(); };
+      const timer = setTimeout(() => { this.onStatus({ slow: true }); done(); }, 10000);
+      this.unsubs = [
+        this.db.collection('app').onSnapshot((snap) => {
+          for (const c of APP_DOCS) state[c] = {};
+          snap.docs.forEach((d) => { if (APP_DOCS.includes(d.id)) state[d.id] = items(d); });
+          gotApp = true;
+          emit();
+          if (gotMonths) done();
+        }, (e) => { this.onStatus({ error: e }); done(e); }),
+        this.db.collection('months').onSnapshot((snap) => {
+          const tx = {};
+          snap.docs.forEach((d) => Object.assign(tx, items(d)));
+          state.transactions = tx;
+          gotMonths = true;
+          emit();
+          if (gotApp) done();
+        }, (e) => { this.onStatus({ error: e }); done(e); }),
+      ];
+    });
+  }
+
+  pathFor(col, doc) {
+    return col === 'transactions' ? 'months/' + String(doc.date || '').slice(0, 7) : 'app/' + col;
+  }
+
+  /** Merge { items: patch } into one document, one write at a time per document. */
+  mergeItems(path, patch) {
+    const prev = this.chains.get(path) || Promise.resolve();
+    const next = prev.catch(() => {}).then(async () => {
+      const ref = this.db.doc(path);
+      try {
+        await ref.update({ items: patch });
+      } catch (e) {
+        if (e?.code !== 'invalid_argument') throw e;
+        const snap = await ref.get(); // update needs an existing document: create it on first use
+        if (snap.exists) throw Object.assign(new Error('You can view this budget but not change it. Ask the owner to share it with you as Editor.'), { code: 'read_only' });
+        await ref.set({ items: patch });
+      }
+    });
+    this.chains.set(path, next);
+    return next;
+  }
+
+  async put(col, doc) {
+    const old = this.state?.[col]?.[doc.id];
+    const path = this.pathFor(col, doc);
+    if (col === 'transactions' && old && this.pathFor(col, old) !== path) {
+      await this.mergeItems(this.pathFor(col, old), { [doc.id]: null }); // the date moved to another month
+    }
+    await this.mergeItems(path, { [doc.id]: clean(doc) });
+  }
+
+  async putMany(items) {
+    const groups = new Map();
+    for (const { col, doc } of items) {
+      const path = this.pathFor(col, doc);
+      if (!groups.has(path)) groups.set(path, {});
+      groups.get(path)[doc.id] = clean(doc);
+    }
+    for (const [path, patch] of groups) await this.mergeItems(path, patch);
+  }
+
+  async del(col, id) {
+    const old = this.state?.[col]?.[id];
+    if (!old) return;
+    await this.mergeItems(this.pathFor(col, old), { [id]: null });
+  }
+}

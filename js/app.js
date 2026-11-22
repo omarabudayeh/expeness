@@ -1,7 +1,7 @@
 // Home Budget — main UI. Plain ES modules, no build step.
 
 import { CONFIG } from './config.js';
-import { store, LocalBackend, readLocalSnapshot } from './store.js';
+import { store, LocalBackend, ArtifactBackend, readLocalSnapshot } from './store.js';
 import {
   ACCOUNT_TYPES, DEFAULT_CATEGORIES, isSupport, supportCovered, supportSummary, accounts, categories, budgets, transactions, visible,
   balances, txEffect, accountSummary, budgetAmount, budgetForCategory, budgetStatus,
@@ -82,6 +82,11 @@ function openSheet(title, body, { wide = false } = {}) {
   return { el: wrap, close };
 }
 
+function closeAllSheets() {
+  $$('.sheet-wrap').forEach((w) => w.parentNode && w.parentNode.removeChild(w));
+  document.body.classList.remove('no-scroll');
+}
+
 function confirmSheet(message, okLabel = 'Delete') {
   return new Promise((resolve) => {
     const s = openSheet('Are you sure?', `<p>${esc(message)}</p>
@@ -102,6 +107,8 @@ const accIcon = (a) => ACCOUNT_TYPES[a?.type]?.icon || '🏦';
 function defaultMember() {
   const email = backend?.user?.email?.toLowerCase();
   const ms = members();
+  const byUid = backend?.uid && ms.find((m) => m.uid === backend.uid);
+  if (byUid) return byUid.id;
   const byEmail = email && ms.find((m) => (m.email || '').toLowerCase() === email);
   if (byEmail) return byEmail.id;
   const last = lsGet('hb-last-member');
@@ -185,7 +192,7 @@ function viewHome() {
     ${bs.total > 0 ? `${progress(bs.totalSpent / bs.total)}
       <div class="hero-sub"><span>${esc(fmt(bs.totalSpent))} of ${esc(fmt(bs.total))} budgeted</span>
       <span>${bs.total - bs.totalSpent >= 0 ? esc(fmt(bs.total - bs.totalSpent)) + ' left' : '<b class="over">' + esc(fmt(bs.totalSpent - bs.total)) + ' over</b>'}</span></div>`
-      : `<div class="hero-sub"><a href="#/budgets">Set monthly budgets →</a></div>`}
+      : `<div class="hero-sub"><a href="#budgets">Set monthly budgets →</a></div>`}
     <div class="kpis">
       <div><div class="muted tiny">Income</div><div class="kpi-val">${esc(fmtC(tot.income))}</div></div>
       <div><div class="muted tiny">Avg / day</div><div class="kpi-val">${esc(fmtC(avg))}</div></div>
@@ -194,7 +201,7 @@ function viewHome() {
   </section>
 
   <section class="card">
-    <div class="card-head"><h3>Accounts</h3><a href="#/accounts">Manage</a></div>
+    <div class="card-head"><h3>Accounts</h3><a href="#accounts">Manage</a></div>
     ${hasAccounts ? `<div class="acc-rows">
       <div class="acc-line"><span>🏦 Bank${acc.cash ? ' & cash' : ''}</span><b>${esc(fmt(acc.bank + acc.cash))}</b></div>
       <div class="acc-line"><span>🐷 Savings</span><b>${esc(fmt(acc.savings))}</b></div>
@@ -207,18 +214,18 @@ function viewHome() {
   </section>
 
   <section class="card">
-    <div class="card-head"><h3>Budgets this month</h3><a href="#/budgets">All</a></div>
-    ${budgetRows.length ? budgetRows.map(budgetMini).join('') : '<div class="empty small">No budgets yet. <a href="#/budgets">Create one</a></div>'}
+    <div class="card-head"><h3>Budgets this month</h3><a href="#budgets">All</a></div>
+    ${budgetRows.length ? budgetRows.map(budgetMini).join('') : '<div class="empty small">No budgets yet. <a href="#budgets">Create one</a></div>'}
     ${bs.unbudgeted > 0 ? `<div class="muted tiny" style="margin-top:8px">${esc(fmt(bs.unbudgeted))} spent outside any budget</div>` : ''}
   </section>
 
   <section class="card">
-    <div class="card-head"><h3>Where the money went</h3><a href="#/reports">Reports</a></div>
+    <div class="card-head"><h3>Where the money went</h3><a href="#reports">Reports</a></div>
     ${rankBars(topCats, { fmt: fmtC, total: tot.spent, onClickAttr: (r) => `data-action="drill" data-cat="${esc(r.key)}" data-month="${ym}"` })}
   </section>
 
   <section class="card">
-    <div class="card-head"><h3>Recent</h3><a href="#/activity">See all</a></div>
+    <div class="card-head"><h3>Recent</h3><a href="#activity">See all</a></div>
     ${txList(transactions(), { groupByDay: false, limit: 6 })}
   </section>
   <div class="muted tiny center">${esc(s.householdName || '')}</div>`;
@@ -435,12 +442,13 @@ function viewCategories() {
       return `<button class="tx" data-action="edit-category" data-id="${esc(c.id)}"><span class="tx-ico">${esc(c.icon)}</span>
         <span class="tx-main"><span class="tx-title">${esc(c.name)}</span>${b ? `<span class="tx-sub">Budget: ${esc(b.name)}</span>` : ''}</span></button>`;
     }).join('') || '<div class="empty small">None</div>'}</div>`;
-  return `<a class="back" href="#/settings">${I.left} Settings</a>` + block('expense', 'Expense categories') + block('income', 'Income categories');
+  return `<a class="back" href="#prefs">${I.left} Settings</a>` + block('expense', 'Expense categories') + block('income', 'Income categories');
 }
 
 function viewSettings() {
   const s = store.settings();
   const local = store.mode === 'local';
+  const shared = store.mode === 'shared';
   const localSnap = !local ? readLocalSnapshot() : null;
   return `
   <section class="card">
@@ -452,23 +460,27 @@ function viewSettings() {
       <div class="field-label">Members (who paid)</div>
       ${members().map((m, i) => `<div class="member-row">
         <input name="m-name-${i}" value="${esc(m.name)}" placeholder="Name" aria-label="Name">
-        <input name="m-email-${i}" value="${esc(m.email || '')}" placeholder="Login email (optional)" type="email" aria-label="Email">
+        ${shared ? `<button type="button" class="btn sm ${m.uid && m.uid === backend.uid ? 'primary' : ''}" data-action="claim-member" data-id="${esc(m.id)}">${m.uid && m.uid === backend.uid ? 'This is me' : 'I am ' + esc(m.name)}</button>`
+        : `<input name="m-email-${i}" value="${esc(m.email || '')}" placeholder="Login email (optional)" type="email" aria-label="Email">`}
         <input type="hidden" name="m-id-${i}" value="${esc(m.id)}"></div>`).join('')}
-      <div class="member-row"><input name="m-name-new" placeholder="+ Add a member"><input name="m-email-new" placeholder="Email (optional)" type="email"></div>
-      <p class="muted tiny">The email lets the app pick "who paid" automatically when that person is signed in.</p>
+      <div class="member-row"><input name="m-name-new" placeholder="+ Add a member">${shared ? '' : '<input name="m-email-new" placeholder="Email (optional)" type="email">'}</div>
+      <p class="muted tiny">${shared ? 'Tap "I am …" on your own name so the app fills in "who paid" for you.' : 'The email lets the app pick "who paid" automatically when that person is signed in.'}</p>
       <button class="btn primary">Save</button>
     </form>
   </section>
 
   <section class="card tx-list">
-    <a class="tx" href="#/categories"><span class="tx-ico">🏷️</span><span class="tx-main"><span class="tx-title">Categories</span><span class="tx-sub">Add, rename or remove categories</span></span>${I.right}</a>
-    <a class="tx" href="#/accounts"><span class="tx-ico">🏦</span><span class="tx-main"><span class="tx-title">Accounts</span><span class="tx-sub">Bank, savings, credit cards, cash, family support</span></span>${I.right}</a>
-    <a class="tx" href="#/budgets"><span class="tx-ico">🎯</span><span class="tx-main"><span class="tx-title">Budgets</span><span class="tx-sub">Monthly limits</span></span>${I.right}</a>
+    <a class="tx" href="#categories"><span class="tx-ico">🏷️</span><span class="tx-main"><span class="tx-title">Categories</span><span class="tx-sub">Add, rename or remove categories</span></span>${I.right}</a>
+    <a class="tx" href="#accounts"><span class="tx-ico">🏦</span><span class="tx-main"><span class="tx-title">Accounts</span><span class="tx-sub">Bank, savings, credit cards, cash, family support</span></span>${I.right}</a>
+    <a class="tx" href="#budgets"><span class="tx-ico">🎯</span><span class="tx-main"><span class="tx-title">Budgets</span><span class="tx-sub">Monthly limits</span></span>${I.right}</a>
   </section>
 
   <section class="card">
     <h3>Sharing & sync</h3>
-    ${local ? `<p><span class="badge">This device only</span></p>
+    ${shared ? `<p><span class="badge ok">${I.cloud} Shared on claude.ai</span></p>
+      <p class="muted">Your data is saved in this page's private database on claude.ai. Anyone you share the page with as <b>Editor</b> sees and edits the same budget live.</p>
+      <ol class="steps"><li>Click <b>Share</b> at the top of this page on claude.ai.</li><li>Invite your wife's email and choose <b>Editor</b>.</li><li>She opens the link, signs in to claude.ai, and taps "I am …" on her name here in Settings.</li></ol>`
+    : local ? `<p><span class="badge">This device only</span></p>
       <p class="muted">Data is saved in this browser only. To share one live budget with your wife on both phones, connect the free Firebase backend — see <b>README → "Use it together with your wife"</b>. Then use <i>Import backup</i> to bring this data along.</p>`
     : `<p><span class="badge ok">${I.cloud} Shared & synced</span></p>
       <p class="muted">Signed in as <b>${esc(backend.user?.email || '')}</b>. Everything you add appears on your wife's phone within a second (and works offline).</p>
@@ -486,23 +498,25 @@ function viewSettings() {
     <input type="file" id="import-file" accept=".json,application/json" hidden>
     ${local ? '<button class="btn danger sm" data-action="reset" style="margin-top:12px">Erase all data on this device</button>' : ''}
   </section>
-  <p class="muted tiny center">Home Budget · ${store.mode === 'local' ? 'local mode' : 'cloud mode'}</p>`;
+  <p class="muted tiny center">Home Budget · ${{ local: 'saved on this device', cloud: 'Firebase sync', shared: 'claude.ai shared database' }[store.mode]}</p>`;
 }
 
 // ── setup wizard ────────────────────────────────────────────────────────────
 function needsSetup() { return !store.get('meta', 'settings'); }
 
 function viewSetup() {
-  const cloud = store.mode === 'cloud';
+  const cloud = store.mode !== 'local';
   const localSnap = cloud ? readLocalSnapshot() : null;
+  const shared = store.mode === 'shared';
   return `<section class="card setup">
     <div class="logo">💰</div>
     <h2>Welcome to your Home Budget</h2>
     <p class="muted">A two-minute setup. You can change everything later.</p>
     <form id="setup-form" class="form">
       <div class="field-label">Who uses this app?</div>
-      <div class="member-row"><input name="me" placeholder="Your name" required><input name="meEmail" type="email" placeholder="Your login email" value="${esc(backend?.user?.email || '')}"></div>
-      <div class="member-row"><input name="partner" placeholder="Your wife's name"><input name="partnerEmail" type="email" placeholder="Her login email"></div>
+      ${shared ? `<div class="member-row"><input name="me" placeholder="Your name" required><input name="partner" placeholder="Your wife's name"></div>`
+      : `<div class="member-row"><input name="me" placeholder="Your name" required><input name="meEmail" type="email" placeholder="Your login email" value="${esc(backend?.user?.email || '')}"></div>
+      <div class="member-row"><input name="partner" placeholder="Your wife's name"><input name="partnerEmail" type="email" placeholder="Her login email"></div>`}
       <label>Currency<input name="currency" list="currencies2" value="SAR" maxlength="3" style="text-transform:uppercase"></label>
       <datalist id="currencies2">${['SAR', 'AED', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'EGP', 'USD', 'EUR', 'GBP'].map((c) => `<option value="${c}">`).join('')}</datalist>
 
@@ -521,8 +535,8 @@ const num = (v) => { const n = parseFloat(String(v || '').replace(/[, ]/g, ''));
 
 function submitSetup(form) {
   const f = Object.fromEntries(new FormData(form));
-  const ms = [{ id: 'm1', name: f.me.trim(), email: f.meEmail.trim() }];
-  if (f.partner.trim()) ms.push({ id: 'm2', name: f.partner.trim(), email: f.partnerEmail.trim() });
+  const ms = [{ id: 'm1', name: f.me.trim(), email: (f.meEmail || '').trim(), uid: backend?.uid || '' }];
+  if (f.partner.trim()) ms.push({ id: 'm2', name: f.partner.trim(), email: (f.partnerEmail || '').trim(), uid: '' });
   const items = DEFAULT_CATEGORIES.filter((c) => !store.get('categories', c.id)).map((doc) => ({ col: 'categories', doc: { ...doc, createdAt: Date.now() } }));
   const acc = (name, type, opening, extra = {}, order = 0) => ({ col: 'accounts', doc: { id: uid(), name, type, openingBalance: round2(opening), order, createdAt: Date.now(), ...extra } });
   if (f.bankName.trim()) items.push(acc(f.bankName.trim(), 'bank', num(f.bankBal), {}, 0));
@@ -532,7 +546,7 @@ function submitSetup(form) {
   items.push({ col: 'meta', doc: { id: 'settings', householdName: 'Our Home', currency: (f.currency || 'SAR').toUpperCase().trim(), members: ms, createdAt: Date.now() } });
   store.putMany(items);
   lsSet('hb-last-member', 'm1');
-  location.hash = '#/home';
+  location.hash = '#home';
   toast('All set! Tap + to add your first expense.');
 }
 
@@ -890,14 +904,14 @@ function openCategoryForm(existing, kind = 'expense') {
 }
 
 // ── export ──────────────────────────────────────────────────────────────────
-function exportCSV() {
+async function exportCSV() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = [['Date', 'Type', 'Amount', 'Category', 'Budget', 'Account', 'To account', 'Who', 'Note']];
   for (const t of transactions()) {
     rows.push([t.date, t.type, t.type === 'expense' ? -t.amount : t.amount, catOf(t.categoryId)?.name, budOf(t.budgetId)?.name,
       accOf(t.accountId)?.name, accOf(t.toAccountId)?.name, memberName(t.memberId), t.note]);
   }
-  download(`expenses-${todayISO()}.csv`, '﻿' + rows.map((r) => r.map(q).join(',')).join('\r\n'), 'text/csv');
+  return download(`expenses-${todayISO()}.csv`, '﻿' + rows.map((r) => r.map(q).join(',')).join('\r\n'), 'text/csv');
 }
 
 // ── actions (event delegation) ──────────────────────────────────────────────
@@ -922,13 +936,12 @@ const actions = {
   'clear-filters': () => { ui.filters = { type: 'all', q: '', accountId: '', categoryId: '', memberId: '', budgetId: '' }; ui.unbudgetedOnly = false; render(); },
   'type-filter': (el) => { ui.filters.type = el.dataset.v; render(); },
   'drill': (el) => {
-    $$('.sheet-wrap').forEach((w) => w.remove());
-    document.body.classList.remove('no-scroll');
+    closeAllSheets();
     ui.filters = { type: 'all', q: '', accountId: el.dataset.acc || '', categoryId: el.dataset.cat || '', memberId: '', budgetId: el.dataset.budget === 'none' ? '' : (el.dataset.budget || '') };
     ui.unbudgetedOnly = el.dataset.budget === 'none';
     if (el.dataset.month) ui.month = el.dataset.month;
     ui.showFilters = true;
-    location.hash = '#/activity';
+    location.hash = '#activity';
     render();
   },
   'add-account': () => openAccountForm(),
@@ -938,12 +951,16 @@ const actions = {
   'quick-budgets': () => quickBudgets(),
   'add-category': (el) => openCategoryForm(null, el.dataset.kind),
   'edit-category': (el) => openCategoryForm(catOf(el.dataset.id)),
-  'export-json': () => { download(`home-budget-backup-${todayISO()}.json`, store.exportJSON()); toast('Backup downloaded'); },
+  'export-json': async () => {
+    try { if (await download(`home-budget-backup-${todayISO()}.json`, store.exportJSON())) toast('Backup saved'); } catch (e) { toast('Could not save the file: ' + (e.message || e.code)); }
+  },
   'import-json': () => $('#import-file').click(),
-  'export-csv': () => exportCSV(),
+  'export-csv': async () => {
+    try { if (await exportCSV()) toast('Spreadsheet saved'); } catch (e) { toast('Could not save the file: ' + (e.message || e.code)); }
+  },
   'reset': async () => {
     if (!(await confirmSheet('Erase ALL data on this device? Download a backup first if you might need it.', 'Erase everything'))) return;
-    await backend.wipe(); location.hash = '#/home'; render();
+    await backend.wipe(); location.hash = '#home'; render();
   },
   'upload-local': async () => {
     const snap = readLocalSnapshot();
@@ -953,8 +970,15 @@ const actions = {
       const n = await store.importJSON(JSON.stringify({ data: snap }));
       localStorage.removeItem('hb-expenses-data-v1');
       toast(`Uploaded ${n} items`);
-      location.hash = '#/home';
+      location.hash = '#home';
     } catch (e) { toast(e.message); }
+  },
+  'claim-member': (el) => {
+    const ms = members().map((m) => ({ ...m, uid: m.id === el.dataset.id ? backend.uid : (m.uid === backend.uid ? '' : m.uid) }));
+    const name = ms.find((m) => m.id === el.dataset.id)?.name || '';
+    store.saveSettings({ members: ms });
+    closeAllSheets();
+    toast(`Hi ${name}! New expenses will be marked as yours.`);
   },
   'sign-out': async () => { await backend.signOut(); location.reload(); },
 };
@@ -987,7 +1011,7 @@ document.addEventListener('submit', (e) => {
   if (e.target.id === 'settings-form') {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const ms = members().map((m, i) => ({ id: fd.get(`m-id-${i}`), name: String(fd.get(`m-name-${i}`) || '').trim(), email: String(fd.get(`m-email-${i}`) || '').trim() }))
+    const ms = members().map((m, i) => ({ ...m, id: fd.get(`m-id-${i}`), name: String(fd.get(`m-name-${i}`) || '').trim(), email: String(fd.get(`m-email-${i}`) ?? m.email ?? '').trim() }))
       .filter((m) => m.name);
     const newName = String(fd.get('m-name-new') || '').trim();
     if (newName) ms.push({ id: uid(), name: newName, email: String(fd.get('m-email-new') || '').trim() });
@@ -999,7 +1023,8 @@ document.addEventListener('submit', (e) => {
 });
 
 // ── render ──────────────────────────────────────────────────────────────────
-const TITLES = { home: 'Home', activity: 'Activity', budgets: 'Budgets', reports: 'Reports', accounts: 'Accounts', settings: 'Settings', categories: 'Categories' };
+// Route names avoid words claude.ai reserves in the page link (e.g. "settings").
+const TITLES = { home: 'Home', activity: 'Activity', budgets: 'Budgets', reports: 'Reports', accounts: 'Accounts', prefs: 'Settings', categories: 'Categories' };
 
 function render() {
   if (!ready) return;
@@ -1012,12 +1037,12 @@ function render() {
   const caret = document.activeElement?.selectionStart;
   const y = window.scrollY;
 
-  const views = { home: viewHome, activity: viewActivity, budgets: viewBudgets, reports: viewReports, accounts: viewAccounts, settings: viewSettings, categories: viewCategories, setup: viewSetup };
+  const views = { home: viewHome, activity: viewActivity, budgets: viewBudgets, reports: viewReports, accounts: viewAccounts, prefs: viewSettings, categories: viewCategories, setup: viewSetup };
   $('#view').innerHTML = views[view]();
   $('#title').textContent = setup ? 'Home Budget' : TITLES[view];
   document.body.classList.toggle('setup-mode', setup);
   $$('.nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === view));
-  $('#sync').innerHTML = store.mode === 'cloud' ? `<span class="badge ok" title="Shared & synced">${I.cloud}</span>` : '<span class="badge" title="Saved on this device only">Local</span>';
+  $('#sync').innerHTML = store.mode !== 'local' ? `<span class="badge ok" title="Shared & synced">${I.cloud}</span>` : '<span class="badge" title="Saved on this device only">Local</span>';
 
   if (active) {
     const el = document.getElementById(active);
@@ -1067,6 +1092,15 @@ function fatal(title, detail, buttons = '') {
   $('#so')?.addEventListener('click', async () => { await backend.signOut(); location.reload(); });
 }
 
+/** On a shared claude.ai page, ask each person once which member they are. */
+function askWhoIAm() {
+  if (store.mode !== 'shared' || !backend.uid || needsSetup()) return;
+  const ms = members();
+  if (!ms.length || ms.some((m) => m.uid === backend.uid)) return;
+  openSheet('Who are you?', `<p class="muted">Pick your name so expenses you add are marked as yours. You can change this later in Settings.</p>
+    <div class="row-btns wrap">${ms.map((m) => `<button class="btn" data-action="claim-member" data-id="${esc(m.id)}">${esc(m.name)}</button>`).join('')}</div>`);
+}
+
 // ── boot ────────────────────────────────────────────────────────────────────
 async function boot() {
   installTooltips();
@@ -1075,7 +1109,22 @@ async function boot() {
     toast(/permission/i.test(e.code || e.message) ? 'Not allowed — is this email in the security rules?' : 'Could not save: ' + (e.message || e));
   });
 
-  if (CONFIG.firebase) {
+  const runtime = globalThis.claude?.use ? globalThis.claude : null;
+  if (runtime) {
+    const [db, user] = await Promise.all([runtime.use('db'), runtime.use('user')]);
+    if (!db) return fatal('Sign in to see your budget', 'Your budget is stored on claude.ai. Sign in to claude.ai with the account this page was shared with, then open it again.');
+    backend = new ArtifactBackend(db, user);
+    backend.onStatus = (st) => {
+      if (st.slow) toast('Still connecting… showing what has loaded so far.');
+      if (st.error && st.error.code !== 'revoked') toast('Lost connection to your data. Reload the page to reconnect.');
+    };
+    try {
+      await store.init(backend);
+    } catch (e) {
+      console.error(e);
+      return fatal('Could not load your data', e?.message || String(e));
+    }
+  } else if (CONFIG.firebase) {
     try {
       const { createFirebaseBackend } = await import('./firebase.js');
       backend = await createFirebaseBackend(CONFIG.firebase, CONFIG.householdId || 'home');
@@ -1105,8 +1154,9 @@ async function boot() {
   store.subscribe(render);
   window.addEventListener('hashchange', render);
   render();
+  askWhoIAm();
 
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  if ('serviceWorker' in navigator && location.protocol !== 'file:' && !globalThis.claude) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 }
