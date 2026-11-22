@@ -4,7 +4,7 @@ A simple, private app for two people (you and your wife) to see **where the mone
 
 - **Expenses, income and transfers**, each with a category, the account it was paid from, who paid, a date and a note.
 - **Daily, monthly and yearly reports**: spending per day / month, by category, by budget, by account, by person, biggest expenses, and a comparison with the previous period.
-- **Accounts**: bank, savings (with an optional goal), credit cards (limit, amount owed, available credit) and cash. Balances update by themselves as you add transactions. Net worth = everything you have − card debt.
+- **Accounts**: bank, savings (with an optional goal), credit cards (limit, amount owed, available credit), cash, and **family support** (e.g. when your father pays for things on your behalf). Balances update by themselves as you add transactions. Net worth = everything you have − card debt.
 - **Monthly budgets**: e.g. *Groceries 2,000*. When you add an expense you **choose which budget to deduct from** (it's picked automatically from the category, and you can change it) and **which account to deduct from**. You see what's left and how much you can spend per day for the rest of the month.
 - **Shared and live**: what one of you adds shows up on the other's phone within a second. It also works offline and syncs when you're back online.
 - Installs on your phone's home screen like a normal app. No ads, no third parties, and your data stays in your own free Firebase project.
@@ -30,6 +30,13 @@ A simple, private app for two people (you and your wife) to see **where the mone
 - **Moving money to savings** is also a **Transfer**.
 - Once a month, compare each account with your bank app. If it's off, open the account and type in the real balance. The app adjusts.
 - A new budget amount applies from the month you're viewing onwards. Past months keep their old amount.
+
+**When family pays for you (e.g. "Father support")**
+- Create it once: **🏦 → + Add account → Type: 🤝 Family support** (the name *Father support* is filled in for you).
+- When your dad pays for something for you, add a normal **Expense** and choose **Paid from: Father support**. It counts in your spending, categories and budgets, so reports still show the true cost of your life, but it doesn't reduce your bank balance.
+- When he sends you money, add a **Transfer** from **Father support** to your bank (the bank is picked for you).
+- You'll see how much he covered this month and this year on Home, on the account, and in Reports ("🤝 X of this was paid for you by family support").
+- By default it's treated as a **gift**: not your money and not a debt, so it stays out of net worth. If you plan to pay it back, open the account and tick **We will pay this back**. It then shows "We owe X" and counts as debt. Paying him back is a **Transfer** from your bank to Father support.
 
 ---
 
@@ -105,7 +112,7 @@ Already used the app before connecting Firebase? Open **⚙ Settings → Upload 
 
 - Plain HTML, CSS and JavaScript (ES modules). No build step and no dependencies to install. Firebase SDK v10 is loaded from Google's CDN only when `js/config.js` has a config.
 - Data model (Firestore: `households/<householdId>/<collection>/<id>`):
-  - `accounts`: `{ name, type: bank|savings|credit|cash, openingBalance, limit, goal }`. The current balance = opening balance + all transactions (credit cards are negative when money is owed).
+  - `accounts`: `{ name, type: bank|savings|credit|cash|support, openingBalance, limit, goal, repay }`. The current balance = opening balance + all transactions (credit cards are negative when money is owed).
   - `categories`: `{ name, icon, kind: expense|income }`
   - `budgets`: `{ name, icon, categoryIds[], amounts: { 'YYYY-MM': amount } }`. Each month uses the most recent amount set on or before it.
   - `transactions`: `{ type: expense|income|transfer, amount, date, accountId, toAccountId, categoryId, budgetId, memberId, note }`

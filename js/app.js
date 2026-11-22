@@ -3,7 +3,7 @@
 import { CONFIG } from './config.js';
 import { store, LocalBackend, readLocalSnapshot } from './store.js';
 import {
-  ACCOUNT_TYPES, DEFAULT_CATEGORIES, accounts, categories, budgets, transactions, visible,
+  ACCOUNT_TYPES, DEFAULT_CATEGORIES, isSupport, supportCovered, supportSummary, accounts, categories, budgets, transactions, visible,
   balances, txEffect, accountSummary, budgetAmount, budgetForCategory, budgetStatus,
   periodTx, prevKey, totals, groupSum,
 } from './calc.js';
@@ -111,6 +111,7 @@ function defaultMember() {
 function accountOptionLabel(a) {
   const b = balances()[a.id] || 0;
   if (a.type === 'credit') return `${accIcon(a)} ${a.name} — ${fmtC((Number(a.limit) || 0) + b)} available`;
+  if (isSupport(a)) return `${accIcon(a)} ${a.name}${a.repay ? ` — we owe ${fmtC(-b)}` : ''}`;
   return `${accIcon(a)} ${a.name} — ${fmtC(b)}`;
 }
 
@@ -122,7 +123,8 @@ function txRow(t) {
   if (t.type === 'transfer') {
     icon = '↔';
     const to = accOf(t.toAccountId);
-    title = t.note || (to?.type === 'credit' ? `Card payment → ${to.name}` : `Transfer → ${to?.name || '?'}`);
+    title = t.note || (isSupport(a) ? `Received from ${a.name}` : isSupport(to) ? `Paid back → ${to.name}`
+      : to?.type === 'credit' ? `Card payment → ${to.name}` : `Transfer → ${to?.name || '?'}`);
     sub.push(`${a?.name || '?'} → ${to?.name || '?'}`);
   } else {
     if (t.note && c) sub.push(c.name);
@@ -198,6 +200,7 @@ function viewHome() {
       <div class="acc-line"><span>🐷 Savings</span><b>${esc(fmt(acc.savings))}</b></div>
       ${acc.creditLimit || acc.creditOwed ? `<div class="acc-line"><span>💳 Credit cards owed</span><b>${esc(fmt(acc.creditOwed))}</b></div>
       ${acc.creditLimit ? `${progress(acc.creditOwed / acc.creditLimit, { thin: true })}<div class="muted tiny">${esc(fmt(acc.creditAvailable))} available of ${esc(fmt(acc.creditLimit))} limit</div>` : ''}` : ''}
+      ${supportSummary(ym).list.map((r) => `<div class="acc-line"><span>🤝 From ${esc(r.account.name)} this month</span><b>${esc(fmt(r.period))}</b></div>`).join('')}
     </div>
     <div class="net-row"><span class="muted">Net worth</span><b>${esc(fmt(acc.net))}</b></div>`
     : `<div class="empty small">Add your bank, savings and credit card accounts to track balances.<br><button class="btn primary sm" data-action="add-account">Add account</button></div>`}
@@ -323,6 +326,14 @@ function viewAccounts() {
     if (!items.length) return '';
     return `<div class="card-head pad"><h3>${meta.icon} ${esc(meta.plural)}</h3></div>` + items.map((a) => {
       const b = bal[a.id] || 0;
+      if (isSupport(a)) {
+        const month = supportCovered(a.id, thisMonth());
+        const year = supportCovered(a.id, thisYear());
+        return `<button class="card acc-card" data-action="account-detail" data-id="${esc(a.id)}">
+          <div class="bm-top"><span class="bc-name">${esc(a.name)}</span><span><b>${esc(fmt(month))}</b> <span class="muted">this month</span></span></div>
+          <div class="bm-top tiny muted"><span>${esc(fmt(year))} in ${thisYear()}</span>
+          <span>${a.repay ? `We owe ${esc(fmt(Math.max(0, -b)))}` : `${esc(fmt(Math.max(0, -b)))} in total · gift`}</span></div></button>`;
+      }
       if (a.type === 'credit') {
         const owed = -b, limit = Number(a.limit) || 0;
         return `<button class="card acc-card" data-action="account-detail" data-id="${esc(a.id)}">
@@ -344,6 +355,7 @@ function viewAccounts() {
     <div class="kpis"><div><div class="muted tiny">Bank + cash</div><div class="kpi-val">${esc(fmtC(acc.bank + acc.cash))}</div></div>
     <div><div class="muted tiny">Savings</div><div class="kpi-val">${esc(fmtC(acc.savings))}</div></div>
     <div><div class="muted tiny">Cards owed</div><div class="kpi-val">${esc(fmtC(acc.creditOwed))}</div></div></div>
+    ${acc.hasSupport ? `<div class="muted tiny" style="margin-top:10px">🤝 Family support isn't counted in net worth${acc.supportOwed > 0 ? `, except the ${esc(fmt(acc.supportOwed))} you plan to pay back` : ' (it is a gift, not your money or a debt)'}.</div>` : ''}
   </section>
   <div class="row-btns"><button class="btn primary" data-action="add-account">+ Add account</button>
     <button class="btn" data-action="add-tx" data-type="transfer">${I.swap} Transfer / Pay card</button></div>
@@ -388,6 +400,7 @@ function viewReports() {
   }));
   const incomeCats = groupSum(list, (t) => t.categoryId, 'income').map((r) => ({ label: catOf(r.key)?.name || 'Income', icon: catOf(r.key)?.icon, value: r.value }));
   const biggest = list.filter((t) => t.type === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5);
+  const supportPaid = round2(list.filter((t) => t.type === 'expense' && isSupport(accOf(t.accountId))).reduce((a2, t) => a2 + Number(t.amount), 0));
   const drillMonth = kind === 'day' ? key.slice(0, 7) : kind === 'month' ? key : '';
 
   return `
@@ -401,6 +414,7 @@ function viewReports() {
       <div><div class="muted tiny">${tot.net >= 0 ? 'Saved' : 'Overspent'}</div><div class="kpi-val ${tot.net < 0 ? 'over' : ''}">${esc(fmtC(Math.abs(tot.net)))}</div>
         ${tot.income > 0 ? `<div class="tiny muted">${Math.round(pct(tot.net, tot.income))}% of income</div>` : ''}</div>
     </div>
+    ${supportPaid > 0 ? `<div class="muted tiny" style="margin-top:8px">🤝 ${esc(fmt(supportPaid))} of this was paid for you by family support (${Math.round(pct(supportPaid, tot.spent))}%)</div>` : ''}
     ${kind !== 'day' ? `<div class="muted tiny" style="margin-top:8px">Average ${esc(fmt(tot.spent / Math.max(1, daysCount)))} per day</div>` : ''}
   </section>
   ${trend ? `<section class="card"><h3>${kind === 'month' ? 'Spending per day' : 'Spending per month'}</h3>${trend}</section>` : ''}
@@ -448,7 +462,7 @@ function viewSettings() {
 
   <section class="card tx-list">
     <a class="tx" href="#/categories"><span class="tx-ico">🏷️</span><span class="tx-main"><span class="tx-title">Categories</span><span class="tx-sub">Add, rename or remove categories</span></span>${I.right}</a>
-    <a class="tx" href="#/accounts"><span class="tx-ico">🏦</span><span class="tx-main"><span class="tx-title">Accounts</span><span class="tx-sub">Bank, savings, credit cards, cash</span></span>${I.right}</a>
+    <a class="tx" href="#/accounts"><span class="tx-ico">🏦</span><span class="tx-main"><span class="tx-title">Accounts</span><span class="tx-sub">Bank, savings, credit cards, cash, family support</span></span>${I.right}</a>
     <a class="tx" href="#/budgets"><span class="tx-ico">🎯</span><span class="tx-main"><span class="tx-title">Budgets</span><span class="tx-sub">Monthly limits</span></span>${I.right}</a>
   </section>
 
@@ -536,7 +550,8 @@ function openTxForm(existing, preset = {}) {
   }
   const defaultAcc = (ty) => {
     const last = lsGet('hb-last-acc-' + ty);
-    return (accs.find((a) => a.id === last && !a.archived) || accs.find((a) => a.type === 'bank') || accs.find((a) => a.type !== 'savings') || accs[0]).id;
+    return (accs.find((a) => a.id === last && !a.archived) || accs.find((a) => a.type === 'bank')
+      || accs.find((a) => a.type !== 'savings' && !isSupport(a)) || accs[0]).id;
   };
   if (!t.accountId) t.accountId = defaultAcc(t.type);
   const ms = members();
@@ -563,6 +578,7 @@ function openTxForm(existing, preset = {}) {
   </form>`);
   const form = $('form', s.el);
   let budgetTouched = !!existing;
+  let toTouched = !!existing;
 
   const type = () => form.type.value;
   const renderCats = () => {
@@ -596,13 +612,27 @@ function openTxForm(existing, preset = {}) {
     if (a && type() !== 'income') {
       const b = balances()[a.id] || 0;
       const back = existing && existing.accountId === a.id && existing.type !== 'income' ? Number(existing.amount) : 0;
-      if (a.type === 'credit') {
+      if (isSupport(a)) {
+        ah = type() === 'expense' ? `🤝 Counts in your spending and budgets, but doesn't reduce your own accounts.` : '';
+      } else if (a.type === 'credit') {
         const avail = (Number(a.limit) || 0) + b + back;
         if (a.limit && amt > avail) ah = `⚠ Only ${fmt(avail)} available on this card`;
       } else if (b + back - amt < 0) ah = `⚠ This takes ${a.name} below zero (${fmt(b + back - amt)})`;
     }
     $('#acc-hint', form).textContent = ah;
-    $('#acc-hint', form).classList.toggle('over', !!ah);
+    $('#acc-hint', form).classList.toggle('over', ah.startsWith('⚠'));
+  };
+  // Sensible "to" account: money from family support goes to the bank; otherwise pay the card.
+  const pickToAccount = () => {
+    const from = accOf(form.accountId.value);
+    const to = accOf(form.toAccountId.value);
+    const bank = accs.find((a) => a.type === 'bank' && a.id !== from?.id);
+    if (isSupport(from) && bank && !toTouched) { form.toAccountId.value = bank.id; return; }
+    if (to && to.id !== from?.id && !(isSupport(from) && isSupport(to))) return;
+    const other = (isSupport(from) && accs.find((a) => a.type === 'bank'))
+      || accs.find((a) => a.id !== from?.id && a.type === 'credit') || accs.find((a) => a.id !== from?.id && !isSupport(a))
+      || accs.find((a) => a.id !== from?.id);
+    if (other) form.toAccountId.value = other.id;
   };
   const applyType = () => {
     const ty = type();
@@ -611,10 +641,7 @@ function openTxForm(existing, preset = {}) {
     $('.when-expense', form).hidden = ty !== 'expense';
     $('.when-transfer', form).hidden = ty !== 'transfer';
     $('#acc-label', form).textContent = ty === 'income' ? 'Received into' : ty === 'transfer' ? 'From account' : 'Paid from';
-    if (ty === 'transfer' && form.toAccountId.value === form.accountId.value) {
-      const other = accs.find((a) => a.id !== form.accountId.value && a.type === 'credit') || accs.find((a) => a.id !== form.accountId.value);
-      if (other) form.toAccountId.value = other.id;
-    }
+    if (ty === 'transfer') pickToAccount();
     renderCats();
     renderBudgets();
   };
@@ -636,7 +663,8 @@ function openTxForm(existing, preset = {}) {
     }
     if (e.target.name === 'budgetId') { budgetTouched = true; updateHints(); }
     if (e.target.name === 'date') renderBudgets();
-    if (e.target.name === 'accountId') updateHints();
+    if (e.target.name === 'toAccountId') toTouched = true;
+    if (e.target.name === 'accountId') { if (type() === 'transfer') pickToAccount(); updateHints(); }
   });
   form.amount.addEventListener('input', updateHints);
 
@@ -656,7 +684,7 @@ function openTxForm(existing, preset = {}) {
       toAccountId: f.type === 'transfer' ? f.toAccountId : '',
     };
     store.put('transactions', doc);
-    lsSet('hb-last-acc-' + f.type, f.accountId);
+    if (!isSupport(accOf(f.accountId))) lsSet('hb-last-acc-' + f.type, f.accountId); // never default to someone else's money
     if (f.memberId) lsSet('hb-last-member', f.memberId);
     if (again) {
       form.amount.value = ''; form.note.value = ''; t.categoryId = ''; budgetTouched = false;
@@ -689,8 +717,9 @@ function openAccountForm(existing) {
   <form class="form" novalidate>
     <label>Name<input name="name" value="${esc(a.name)}" placeholder="e.g. Al Rajhi current account" required></label>
     <label>Type<select name="type">${Object.entries(ACCOUNT_TYPES).map(([k, v]) => `<option value="${k}" ${k === a.type ? 'selected' : ''}>${v.icon} ${v.label}</option>`).join('')}</select></label>
-    <label><span id="bal-label">Current balance</span><input name="balance" inputmode="decimal" value="${existing ? esc(a.type === 'credit' ? round2(-bal) : bal) : ''}" placeholder="0.00"></label>
-    <div class="hint">Enter what your bank app shows right now. The app keeps it updated as you add transactions — you can correct it here anytime.</div>
+    <label class="when-support check"><input type="checkbox" name="repay" ${a.repay ? 'checked' : ''}> We will pay this back (treat it as a loan)</label>
+    <label><span id="bal-label">Current balance</span><input name="balance" inputmode="decimal" value="${existing ? esc(a.type === 'credit' || isSupport(a) ? round2(-bal) : bal) : ''}" placeholder="0.00"></label>
+    <div class="hint" id="bal-hint"></div>
     <label class="when-credit">Credit limit<input name="limit" inputmode="decimal" value="${esc(a.limit)}" placeholder="e.g. 20000"></label>
     <label class="when-savings">Savings goal (optional)<input name="goal" inputmode="decimal" value="${esc(a.goal)}" placeholder="e.g. 50000"></label>
     <div class="err" role="alert"></div>
@@ -703,15 +732,23 @@ function openAccountForm(existing) {
     const ty = form.type.value;
     $('.when-credit', form).hidden = ty !== 'credit';
     $('.when-savings', form).hidden = ty !== 'savings';
-    $('#bal-label', form).textContent = ty === 'credit' ? 'Amount owed right now' : 'Current balance';
+    $('.when-support', form).hidden = ty !== 'support';
+    const loan = ty === 'support' && form.repay.checked;
+    $('#bal-label', form).textContent = ty === 'credit' ? 'Amount owed right now'
+      : ty === 'support' ? (loan ? 'Amount we owe right now' : 'Covered so far (optional)') : 'Current balance';
+    $('#bal-hint', form).textContent = ty === 'support'
+      ? 'When this person pays for something for you, add an Expense and choose this account under "Paid from". It counts in your spending and budgets but doesn\'t touch your bank. If they send you money, add a Transfer from this account to your bank.'
+      : 'Enter what your bank app shows right now. The app keeps it updated as you add transactions. You can correct it here anytime.';
+    if (!existing && ty === 'support' && !form.name.value.trim()) form.name.value = 'Father support';
   };
   form.type.addEventListener('change', apply);
+  form.repay.addEventListener('change', apply);
   apply();
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(form));
     if (!f.name.trim()) { $('.err', form).textContent = 'Give it a name.'; return; }
-    const desired = f.type === 'credit' ? -num(f.balance) : num(f.balance);
+    const desired = f.type === 'credit' || f.type === 'support' ? -num(f.balance) : num(f.balance);
     const id = existing?.id || uid();
     const effect = existing ? txEffect(id) : 0;
     store.put('accounts', {
@@ -719,6 +756,7 @@ function openAccountForm(existing) {
       openingBalance: round2(desired - effect),
       limit: f.type === 'credit' ? num(f.limit) : 0,
       goal: f.type === 'savings' ? num(f.goal) : 0,
+      repay: f.type === 'support' ? !!f.repay : false,
       order: existing?.order ?? accounts().length,
     });
     s.close();

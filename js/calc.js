@@ -8,7 +8,11 @@ export const ACCOUNT_TYPES = {
   savings: { label: 'Savings', plural: 'Savings', icon: '🐷' },
   credit: { label: 'Credit card', plural: 'Credit cards', icon: '💳' },
   cash: { label: 'Cash / Wallet', plural: 'Cash & wallets', icon: '👛' },
+  support: { label: 'Family support (paid for us)', plural: 'Family support', icon: '🤝' },
 };
+
+/** True for accounts that are someone else's money (e.g. Dad paying on our behalf). */
+export const isSupport = (a) => a?.type === 'support';
 
 export const DEFAULT_CATEGORIES = [
   ['groceries', 'Groceries', '🛒'],
@@ -85,15 +89,36 @@ export function txEffect(accountId) {
 
 export function accountSummary() {
   const bal = balances();
-  const out = { bank: 0, savings: 0, cash: 0, creditOwed: 0, creditLimit: 0, net: 0 };
+  const out = { bank: 0, savings: 0, cash: 0, creditOwed: 0, creditLimit: 0, net: 0, supportOwed: 0, hasSupport: false };
   for (const a of visible(accounts())) {
     const b = bal[a.id] || 0;
+    if (a.type === 'support') {
+      // A gift isn't our money and isn't a debt, so it stays out of net worth; a loan is a debt.
+      out.hasSupport = true;
+      if (a.repay) { out.supportOwed += -b; out.net += b; }
+      continue;
+    }
     if (a.type === 'credit') { out.creditOwed += -b; out.creditLimit += Number(a.limit) || 0; }
     else out[a.type] = (out[a.type] || 0) + b;
     out.net += b;
   }
   out.creditAvailable = out.creditLimit - out.creditOwed;
   return out;
+}
+
+/** What a support account paid for us (expenses + money sent to us), optionally within a period key. */
+export function supportCovered(accountId, key = '') {
+  let sum = 0;
+  for (const t of store.all('transactions')) {
+    if (t.accountId !== accountId || !(t.date || '').startsWith(key)) continue;
+    if (t.type === 'expense' || t.type === 'transfer') sum += Number(t.amount) || 0;
+  }
+  return round2(sum);
+}
+
+export function supportSummary(key) {
+  const list = visible(accounts()).filter(isSupport).map((a) => ({ account: a, period: supportCovered(a.id, key) }));
+  return { list, period: round2(list.reduce((s, r) => s + r.period, 0)) };
 }
 
 // ── budgets ─────────────────────────────────────────────────────────────────
