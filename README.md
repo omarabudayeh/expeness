@@ -2,6 +2,8 @@
 
 A simple, private app for two people (you and your wife) to see **where the money goes**.
 
+![Home Budget: Home, Add expense, Budgets and Reports screens (sample data)](screenshots/home-budget-preview.png)
+
 - **Expenses, income and transfers**, each with a category, the account it was paid from, who paid, a date and a note.
 - **Daily, monthly and yearly reports**: spending per day / month, by category, by budget, by account, by person, biggest expenses, and a comparison with the previous period.
 - **Accounts**: bank, savings (with an optional goal), credit cards (limit, amount owed, available credit), cash, and **family support** (e.g. when your father pays for things on your behalf). Balances update by themselves as you add transactions. Net worth = everything you have − card debt.
