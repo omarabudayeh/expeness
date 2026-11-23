@@ -2,9 +2,12 @@
 
 A simple, private app for two people (you and your wife) to see **where the money goes**.
 
+![Home Budget: Home, Add expense, Budgets and Reports screens (sample data)](screenshots/home-budget-preview.png)
+
 - **Expenses, income and transfers**, each with a category, the account it was paid from, who paid, a date and a note.
 - **Daily, monthly and yearly reports**: spending per day / month, by category, by budget, by account, by person, biggest expenses, and a comparison with the previous period.
 - **Accounts**: bank, savings (with an optional goal), credit cards (limit, amount owed, available credit), cash, and **family support** (e.g. when your father pays for things on your behalf). Balances update by themselves as you add transactions. Net worth = everything you have − card debt.
+- **Budget months that follow your salary**: set the day your salary arrives (e.g. the 25th) and every "month" runs salary to salary, e.g. 25 Nov – 24 Dec. If the salary comes a few days early, the new budget month starts on the day you add it (as income with the *Salary* category).
 - **Monthly budgets**: e.g. *Groceries 2,000*. When you add an expense you **choose which budget to deduct from** (it's picked automatically from the category, and you can change it) and **which account to deduct from**. You see what's left and how much you can spend per day for the rest of the month.
 - **Shared and live**: what one of you adds shows up on the other's phone within a second. It also works offline and syncs when you're back online.
 - Installs on your phone's home screen like a normal app. No ads, no third parties, and your data stays in your own free Firebase project.
@@ -29,6 +32,7 @@ A simple, private app for two people (you and your wife) to see **where the mone
 - **Paying the credit card** is a **Transfer** from the bank to the card, not an expense. The card purchases were already counted when you made them, so this avoids counting them twice.
 - **Moving money to savings** is also a **Transfer**.
 - Once a month, compare each account with your bank app. If it's off, open the account and type in the real balance. The app adjusts.
+- Salary on the 25th? Go to **⚙ Settings → Budget month starts on** and choose **Day 25**. Add your salary as **Income → Salary** on the day it arrives, so the new budget month starts that day.
 - A new budget amount applies from the month you're viewing onwards. Past months keep their old amount.
 
 **When family pays for you (e.g. "Father support")**

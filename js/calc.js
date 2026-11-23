@@ -1,7 +1,7 @@
 // Pure calculations over the store's data: balances, budgets, report aggregates.
 
 import { store } from './store.js';
-import { addMonths, addDays, daysInMonth, todayISO, round2 } from './utils.js';
+import { addMonths, addDays, todayISO, round2, monthLabel, parseISO } from './utils.js';
 
 export const ACCOUNT_TYPES = {
   bank: { label: 'Bank account', plural: 'Bank accounts', icon: '🏦' },
@@ -62,6 +62,67 @@ function cached(key, fn) {
   return memo[key];
 }
 
+// ── budget months (salary cycles) ───────────────────────────────────────────
+// A budget month is keyed by the calendar month it starts in ('YYYY-MM').
+// With cycleDay 25 the "2026-11" budget month runs 25 Nov → 24 Dec. If salaryStart is on,
+// a Salary income that lands up to 7 days before (or 3 days after) the 25th starts it on that day.
+export const cycleDay = () => Math.min(28, Math.max(1, Number(store.settings().cycleDay) || 1));
+const salaryStartOn = () => store.settings().salaryStart !== false;
+
+const salaryDates = () => cached('salaryDates', () => store.all('transactions')
+  .filter((t) => t.type === 'income' && t.categoryId === 'cat-salary' && t.date).map((t) => t.date).sort());
+
+export function periodStart(ym) {
+  return cached('ps' + ym, () => {
+    const d = cycleDay();
+    const base = `${ym}-${String(d).padStart(2, '0')}`;
+    if (d === 1 || !salaryStartOn()) return base;
+    let lo = addDays(base, -7);
+    if (lo < ym + '-01') lo = ym + '-01'; // never reach back into the previous calendar month
+    const hi = addDays(base, 3);
+    return salaryDates().find((x) => x >= lo && x <= hi) || base;
+  });
+}
+
+export function periodRange(ym) {
+  return { start: periodStart(ym), end: addDays(periodStart(addMonths(ym, 1)), -1) };
+}
+
+/** The budget month a date belongs to. */
+export function periodOf(iso) {
+  const ym = iso.slice(0, 7);
+  return iso >= periodStart(ym) ? ym : addMonths(ym, -1);
+}
+
+export const currentPeriod = () => periodOf(todayISO());
+
+const dayCount = (a, b) => Math.round((parseISO(b) - parseISO(a)) / 864e5) + 1;
+export const periodDays = (ym) => { const r = periodRange(ym); return dayCount(r.start, r.end); };
+/** Days of the budget month already lived (all of it for a past month). */
+export function periodElapsed(ym) {
+  const r = periodRange(ym);
+  const t = todayISO();
+  if (t > r.end) return dayCount(r.start, r.end);
+  if (t < r.start) return 0;
+  return dayCount(r.start, t);
+}
+
+/** "November 2026" for calendar months, "25 Nov – 24 Dec 2026" for salary cycles. */
+export function periodLabel(ym) {
+  if (cycleDay() === 1 && periodStart(ym) === ym + '-01') return monthLabel(ym);
+  const r = periodRange(ym);
+  const f = (iso, year) => parseISO(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(year ? { year: 'numeric' } : {}) });
+  return `${f(r.start)} – ${f(r.end, true)}`;
+}
+
+/** Does a date fall in a key: 'YYYY' (12 budget months), 'YYYY-MM' (budget month) or 'YYYY-MM-DD'. */
+export function inKey(date, key) {
+  if (!date) return false;
+  if (key.length === 10) return date === key;
+  if (key.length === 7) { const r = periodRange(key); return date >= r.start && date <= r.end; }
+  return date >= periodStart(key + '-01') && date <= periodRange(key + '-12').end;
+}
+
 /** Map accountId → current balance. Credit cards are negative when money is owed. */
 export function balances() {
   return cached('balances', () => {
@@ -110,7 +171,7 @@ export function accountSummary() {
 export function supportCovered(accountId, key = '') {
   let sum = 0;
   for (const t of store.all('transactions')) {
-    if (t.accountId !== accountId || !(t.date || '').startsWith(key)) continue;
+    if (t.accountId !== accountId || !inKey(t.date, key)) continue;
     if (t.type === 'expense' || t.type === 'transfer') sum += Number(t.amount) || 0;
   }
   return round2(sum);
@@ -136,19 +197,18 @@ export function budgetForCategory(categoryId) {
   return visible(budgets()).find((b) => (b.categoryIds || []).includes(categoryId));
 }
 
-const inMonth = (t, ym) => (t.date || '').startsWith(ym);
 
 export function budgetStatus(ym) {
   return cached('bs' + ym, () => {
     const spent = {};
     let unbudgeted = 0;
     for (const t of store.all('transactions')) {
-      if (t.type !== 'expense' || !inMonth(t, ym)) continue;
+      if (t.type !== 'expense' || !inKey(t.date, ym)) continue;
       if (t.budgetId && store.get('budgets', t.budgetId)) spent[t.budgetId] = (spent[t.budgetId] || 0) + Number(t.amount);
       else unbudgeted += Number(t.amount);
     }
-    const isCurrent = ym === todayISO().slice(0, 7);
-    const daysLeft = isCurrent ? daysInMonth(ym) - Number(todayISO().slice(8)) + 1 : 0;
+    const isCurrent = ym === currentPeriod();
+    const daysLeft = isCurrent ? periodDays(ym) - periodElapsed(ym) + 1 : 0;
     const rows = visible(budgets()).map((b) => {
       const amount = budgetAmount(b, ym);
       const s = round2(spent[b.id] || 0);
@@ -168,7 +228,7 @@ export function budgetStatus(ym) {
 // ── reports ─────────────────────────────────────────────────────────────────
 /** period: { kind: 'day'|'month'|'year', key: 'YYYY-MM-DD'|'YYYY-MM'|'YYYY' } */
 export function periodTx(key) {
-  return store.all('transactions').filter((t) => (t.date || '').startsWith(key));
+  return store.all('transactions').filter((t) => inKey(t.date, key));
 }
 
 export function prevKey(kind, key) {

@@ -6,6 +6,7 @@ import {
   ACCOUNT_TYPES, DEFAULT_CATEGORIES, isSupport, supportCovered, supportSummary, accounts, categories, budgets, transactions, visible,
   balances, txEffect, accountSummary, budgetAmount, budgetForCategory, budgetStatus,
   periodTx, prevKey, totals, groupSum,
+  cycleDay, periodStart, periodRange, periodOf, currentPeriod, periodDays, periodElapsed, periodLabel, inKey,
 } from './calc.js';
 import { barChart, rankBars, shareStrip, progress, installTooltips } from './charts.js';
 import {
@@ -172,7 +173,7 @@ const monthNav = (key, label) => `<div class="period-nav">
 
 // ── views ───────────────────────────────────────────────────────────────────
 function viewHome() {
-  const ym = thisMonth();
+  const ym = currentPeriod();
   const s = store.settings();
   const tot = totals(periodTx(ym));
   const bs = budgetStatus(ym);
@@ -182,12 +183,12 @@ function viewHome() {
     label: catOf(r.key)?.name || 'Uncategorized', icon: catOf(r.key)?.icon, value: r.value, key: r.key,
   }));
   const budgetRows = [...bs.rows].filter((r) => r.amount > 0 || r.spent > 0).sort((a, b) => b.ratio - a.ratio).slice(0, 4);
-  const day = Number(todayISO().slice(8));
+  const day = periodElapsed(ym);
   const avg = day ? tot.spent / day : 0;
 
   return `
   <section class="hero card">
-    <div class="muted">${esc(monthLabel(ym))} · spent so far</div>
+    <div class="muted">${esc(periodLabel(ym))} · spent so far</div>
     <div class="hero-num">${esc(fmt(tot.spent))}</div>
     ${bs.total > 0 ? `${progress(bs.totalSpent / bs.total)}
       <div class="hero-sub"><span>${esc(fmt(bs.totalSpent))} of ${esc(fmt(bs.total))} budgeted</span>
@@ -243,7 +244,7 @@ function filteredTx() {
   const f = ui.filters;
   const q = f.q.trim().toLowerCase();
   return transactions().filter((t) => {
-    if (!(t.date || '').startsWith(ui.month)) return false;
+    if (!inKey(t.date, ui.month)) return false;
     if (f.type !== 'all' && t.type !== f.type) return false;
     if (f.accountId && t.accountId !== f.accountId && t.toAccountId !== f.accountId) return false;
     if (f.categoryId && t.categoryId !== f.categoryId) return false;
@@ -265,7 +266,7 @@ function viewActivity() {
   const activeFilters = ['accountId', 'categoryId', 'memberId', 'budgetId'].filter((k) => f[k]).length + (ui.unbudgetedOnly ? 1 : 0);
   const opt = (arr, sel, labelFn) => arr.map((x) => `<option value="${esc(x.id)}" ${x.id === sel ? 'selected' : ''}>${esc(labelFn(x))}</option>`).join('');
   return `
-  ${monthNav('month', monthLabel(ui.month))}
+  ${monthNav('month', periodLabel(ui.month))}
   <div class="search-row">
     <label class="search">${I.search}<input id="search" type="search" placeholder="Search notes, categories, amounts…" value="${esc(f.q)}"></label>
     <button class="icon-btn ${activeFilters ? 'active' : ''}" data-action="toggle-filters" aria-label="Filters">${I.filter}${activeFilters ? `<span class="dot">${activeFilters}</span>` : ''}</button>
@@ -294,7 +295,7 @@ function viewBudgets() {
   const bs = budgetStatus(ym);
   const rows = bs.rows;
   return `
-  ${monthNav('month', monthLabel(ym))}
+  ${monthNav('month', periodLabel(ym))}
   <section class="card">
     <div class="split"><div><div class="muted tiny">Budgeted</div><div class="kpi-val">${esc(fmtC(bs.total))}</div></div>
     <div><div class="muted tiny">Spent</div><div class="kpi-val">${esc(fmtC(bs.totalSpent))}</div></div>
@@ -334,7 +335,7 @@ function viewAccounts() {
     return `<div class="card-head pad"><h3>${meta.icon} ${esc(meta.plural)}</h3></div>` + items.map((a) => {
       const b = bal[a.id] || 0;
       if (isSupport(a)) {
-        const month = supportCovered(a.id, thisMonth());
+        const month = supportCovered(a.id, currentPeriod());
         const year = supportCovered(a.id, thisYear());
         return `<button class="card acc-card" data-action="account-detail" data-id="${esc(a.id)}">
           <div class="bm-top"><span class="bc-name">${esc(a.name)}</span><span><b>${esc(fmt(month))}</b> <span class="muted">this month</span></span></div>
@@ -376,28 +377,28 @@ function viewReports() {
   const list = periodTx(key);
   const tot = totals(list);
   const prev = totals(periodTx(prevKey(kind, key)));
-  const label = kind === 'year' ? key : kind === 'month' ? monthLabel(key) : longDay(key);
-  const prevLabel = kind === 'year' ? String(Number(key) - 1) : kind === 'month' ? shortMonth(prevKey(kind, key)) : 'previous day';
+  const label = kind === 'year' ? key : kind === 'month' ? periodLabel(key) : longDay(key);
+  const prevLabel = kind === 'year' ? String(Number(key) - 1) : kind === 'month' ? 'last month' : 'previous day';
   const delta = prev.spent > 0 ? ((tot.spent - prev.spent) / prev.spent) * 100 : null;
 
   let trend = '';
   if (kind === 'month') {
-    const n = daysInMonth(key);
-    const byDay = new Array(n).fill(0);
-    list.forEach((t) => { if (t.type === 'expense') byDay[Number(t.date.slice(8)) - 1] += Number(t.amount); });
-    trend = barChart(byDay.map((v, i) => ({ label: String(i + 1), value: round2(v), tip: `${dayLabel(`${key}-${String(i + 1).padStart(2, '0')}`)}: ${fmt(v)}`, highlight: `${key}-${String(i + 1).padStart(2, '0')}` === todayISO() })), { fmt: fmtS });
+    // one bar per day of the budget month (e.g. 25 Nov → 24 Dec)
+    const { start } = periodRange(key);
+    const days = Array.from({ length: periodDays(key) }, (_, i) => addDays(start, i));
+    const byDay = Object.fromEntries(days.map((d) => [d, 0]));
+    list.forEach((t) => { if (t.type === 'expense' && t.date in byDay) byDay[t.date] += Number(t.amount); });
+    trend = barChart(days.map((d) => ({ label: String(Number(d.slice(8))), value: round2(byDay[d]), tip: `${dayLabel(d)}: ${fmt(byDay[d])}`, highlight: d === todayISO() })), { fmt: fmtS });
   } else if (kind === 'year') {
-    const byMonth = new Array(12).fill(0);
-    list.forEach((t) => { if (t.type === 'expense') byMonth[Number(t.date.slice(5, 7)) - 1] += Number(t.amount); });
-    trend = barChart(byMonth.map((v, i) => {
-      const ym = `${key}-${String(i + 1).padStart(2, '0')}`;
-      return { label: shortMonth(ym).slice(0, 3), value: round2(v), tip: `${monthLabel(ym)}: ${fmt(v)}`, highlight: ym === thisMonth() };
-    }), { fmt: fmtS });
+    const months = Array.from({ length: 12 }, (_, i) => `${key}-${String(i + 1).padStart(2, '0')}`);
+    const byMonth = Object.fromEntries(months.map((m) => [m, 0]));
+    list.forEach((t) => { if (t.type === 'expense') { const m = periodOf(t.date); if (m in byMonth) byMonth[m] += Number(t.amount); } });
+    trend = barChart(months.map((m) => ({ label: shortMonth(m).slice(0, 3), value: round2(byMonth[m]), tip: `${periodLabel(m)}: ${fmt(byMonth[m])}`, highlight: m === currentPeriod() })), { fmt: fmtS });
   }
 
   const daysCount = kind === 'year'
-    ? (key === thisYear() ? Math.ceil((new Date() - new Date(Number(key), 0, 1)) / 864e5) : (Number(key) % 4 === 0 ? 366 : 365))
-    : kind === 'month' ? (key === thisMonth() ? Number(todayISO().slice(8)) : daysInMonth(key)) : 1;
+    ? Array.from({ length: 12 }, (_, i) => periodElapsed(`${key}-${String(i + 1).padStart(2, '0')}`)).reduce((a2, b2) => a2 + b2, 0)
+    : kind === 'month' ? periodElapsed(key) : 1;
 
   const cats = groupSum(list, (t) => t.categoryId).map((r) => ({ label: catOf(r.key)?.name || 'Uncategorized', icon: catOf(r.key)?.icon, value: r.value, key: r.key }));
   const who = groupSum(list, (t) => t.memberId).map((r) => ({ label: memberName(r.key) || 'Unassigned', value: r.value }));
@@ -408,7 +409,7 @@ function viewReports() {
   const incomeCats = groupSum(list, (t) => t.categoryId, 'income').map((r) => ({ label: catOf(r.key)?.name || 'Income', icon: catOf(r.key)?.icon, value: r.value }));
   const biggest = list.filter((t) => t.type === 'expense').sort((a, b) => b.amount - a.amount).slice(0, 5);
   const supportPaid = round2(list.filter((t) => t.type === 'expense' && isSupport(accOf(t.accountId))).reduce((a2, t) => a2 + Number(t.amount), 0));
-  const drillMonth = kind === 'day' ? key.slice(0, 7) : kind === 'month' ? key : '';
+  const drillMonth = kind === 'day' ? periodOf(key) : kind === 'month' ? key : '';
 
   return `
   <div class="seg-ctl">${['day', 'month', 'year'].map((k) => `<button class="${kind === k ? 'on' : ''}" data-action="report-kind" data-v="${k}">${{ day: 'Daily', month: 'Monthly', year: 'Yearly' }[k]}</button>`).join('')}</div>
@@ -456,6 +457,10 @@ function viewSettings() {
     <form id="settings-form" class="form">
       <label>Household name<input name="householdName" value="${esc(s.householdName)}"></label>
       <label>Currency<input name="currency" list="currencies" value="${esc(s.currency)}" maxlength="3" style="text-transform:uppercase"></label>
+      <label>Budget month starts on
+        <select name="cycleDay">${Array.from({ length: 28 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === cycleDay() ? 'selected' : ''}>${d === 1 ? '1st (calendar month)' : 'Day ' + d + ' of each month'}</option>`).join('')}</select></label>
+      <label class="check"><input type="checkbox" name="salaryStart" ${s.salaryStart !== false ? 'checked' : ''}> Start a few days earlier when the salary arrives early</label>
+      <p class="muted tiny" style="margin-top:-6px">Pick the day your salary usually arrives (e.g. 25). Budgets, Home and Reports then run salary to salary. "Arrives early" uses income you add with the <b>Salary</b> category.</p>
       <datalist id="currencies">${['SAR', 'AED', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'EGP', 'USD', 'EUR', 'GBP', 'TRY', 'INR', 'PKR'].map((c) => `<option value="${c}">`).join('')}</datalist>
       <div class="field-label">Members (who paid)</div>
       ${members().map((m, i) => `<div class="member-row">
@@ -518,6 +523,8 @@ function viewSetup() {
       : `<div class="member-row"><input name="me" placeholder="Your name" required><input name="meEmail" type="email" placeholder="Your login email" value="${esc(backend?.user?.email || '')}"></div>
       <div class="member-row"><input name="partner" placeholder="Your wife's name"><input name="partnerEmail" type="email" placeholder="Her login email"></div>`}
       <label>Currency<input name="currency" list="currencies2" value="SAR" maxlength="3" style="text-transform:uppercase"></label>
+      <label>Salary usually arrives on day
+        <select name="cycleDay">${Array.from({ length: 28 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === 25 ? 'selected' : ''}>${d === 1 ? '1st (use calendar months)' : 'Day ' + d}</option>`).join('')}</select></label>
       <datalist id="currencies2">${['SAR', 'AED', 'KWD', 'QAR', 'BHD', 'OMR', 'JOD', 'EGP', 'USD', 'EUR', 'GBP'].map((c) => `<option value="${c}">`).join('')}</datalist>
 
       <div class="field-label">Your accounts today <span class="muted">(leave blank to skip)</span></div>
@@ -543,9 +550,10 @@ function submitSetup(form) {
   if (f.savName.trim() && (f.savBal || f.savName !== 'Savings')) items.push(acc(f.savName.trim(), 'savings', num(f.savBal), {}, 1));
   if (f.ccName.trim() && (f.ccLimit || f.ccOwed)) items.push(acc(f.ccName.trim(), 'credit', -num(f.ccOwed), { limit: num(f.ccLimit) }, 2));
   if (f.cash) items.push(acc('Cash', 'cash', 0, {}, 3));
-  items.push({ col: 'meta', doc: { id: 'settings', householdName: 'Our Home', currency: (f.currency || 'SAR').toUpperCase().trim(), members: ms, createdAt: Date.now() } });
+  items.push({ col: 'meta', doc: { id: 'settings', householdName: 'Our Home', currency: (f.currency || 'SAR').toUpperCase().trim(), members: ms, cycleDay: Math.min(28, Math.max(1, Number(f.cycleDay) || 1)), salaryStart: true, createdAt: Date.now() } });
   store.putMany(items);
   lsSet('hb-last-member', 'm1');
+  setTimeout(() => { ui.month = currentPeriod(); ui.report = { kind: 'month', key: currentPeriod() }; render(); }, 0);
   location.hash = '#home';
   toast('All set! Tap + to add your first expense.');
 }
@@ -601,7 +609,7 @@ function openTxForm(existing, preset = {}) {
     $('#cat-grid', form).innerHTML = list.map((c) => `<label class="cat ${c.id === t.categoryId ? 'on' : ''}"><input type="radio" name="categoryId" value="${esc(c.id)}" ${c.id === t.categoryId ? 'checked' : ''}><span class="ico">${esc(c.icon)}</span><span>${esc(c.name)}</span></label>`).join('');
   };
   const renderBudgets = () => {
-    const ym = (form.date.value || todayISO()).slice(0, 7);
+    const ym = periodOf(form.date.value || todayISO());
     const st = budgetStatus(ym);
     const sel = $('#budget-sel', form);
     const current = sel.value || t.budgetId;
@@ -611,11 +619,11 @@ function openTxForm(existing, preset = {}) {
   };
   const updateHints = () => {
     const amt = num(form.amount.value);
-    const ym = (form.date.value || todayISO()).slice(0, 7);
+    const ym = periodOf(form.date.value || todayISO());
     const r = budgetStatus(ym).rows.find((x) => x.budget.id === form.budgetId.value);
     let h = '';
     if (r) {
-      const editingSame = existing && existing.budgetId === r.budget.id && existing.date.slice(0, 7) === ym ? Number(existing.amount) : 0;
+      const editingSame = existing && existing.budgetId === r.budget.id && periodOf(existing.date) === ym ? Number(existing.amount) : 0;
       const after = r.left + editingSame - amt;
       h = `${fmt(r.amount)} budget · ${after >= 0 ? `${fmt(after)} left after this` : `⚠ ${fmt(-after)} over budget after this`}`;
     }
@@ -739,7 +747,7 @@ function openAccountForm(existing) {
     <div class="err" role="alert"></div>
     <div class="row-btns">${existing ? `<button type="button" class="btn danger" id="del">${a.archived ? 'Delete' : 'Archive'}</button>${a.archived ? '<button type="button" class="btn" id="unarchive">Restore</button>' : ''}` : ''}<button class="btn primary">Save</button></div>
   </form>
-  ${existing ? `<div class="card-head pad"><h3>Recent activity</h3><button class="link" data-action="drill" data-acc="${esc(a.id)}" data-month="${thisMonth()}">See all</button></div>
+  ${existing ? `<div class="card-head pad"><h3>Recent activity</h3><button class="link" data-action="drill" data-acc="${esc(a.id)}" data-month="${currentPeriod()}">See all</button></div>
     ${txList(transactions().filter((t) => t.accountId === a.id || t.toAccountId === a.id), { groupByDay: false, limit: 8 })}` : ''}`);
   const form = $('form', s.el);
   const apply = () => {
@@ -800,7 +808,7 @@ function openBudgetForm(existing) {
     <div class="two narrow-first"><label>Icon<input name="icon" value="${esc(b.icon)}" maxlength="4"></label>
     <label>Name<input name="name" value="${esc(b.name)}" placeholder="e.g. Groceries, Eating out, Kids" required></label></div>
     <label>Monthly amount<input name="amount" inputmode="decimal" value="${esc(amount)}" placeholder="e.g. 2000"></label>
-    <div class="hint">Applies from ${esc(monthLabel(ym))} onwards. Earlier months keep their old amount.</div>
+    <div class="hint">Applies from ${esc(periodLabel(ym))} onwards. Earlier months keep their old amount.</div>
     <div class="field-label">Categories that go to this budget automatically</div>
     <div class="cat-grid">${visible(categories('expense')).map((c) => {
       const other = budgetForCategory(c.id);
@@ -847,13 +855,13 @@ function openBudgetDetail(id) {
   if (!b) return;
   const ym = ui.month;
   const r = budgetStatus(ym).rows.find((x) => x.budget.id === id);
-  const list = transactions().filter((t) => t.budgetId === id && t.date.startsWith(ym));
+  const list = transactions().filter((t) => t.budgetId === id && inKey(t.date, ym));
   // last 6 months history
   const hist = [];
   for (let i = 5; i >= 0; i--) {
     const m = addMonths(ym, -i);
     const row = budgetStatus(m).rows.find((x) => x.budget.id === id);
-    hist.push({ label: shortMonth(m).slice(0, 3), value: row?.spent || 0, tip: `${monthLabel(m)}: ${fmt(row?.spent || 0)} of ${fmt(row?.amount || 0)}`, highlight: m === ym });
+    hist.push({ label: shortMonth(m).slice(0, 3), value: row?.spent || 0, tip: `${periodLabel(m)}: ${fmt(row?.spent || 0)} of ${fmt(row?.amount || 0)}`, highlight: m === ym });
   }
   const s = openSheet(`${b.icon || '🎯'} ${b.name}`, `
     <div class="split"><div><div class="muted tiny">Budget</div><div class="kpi-val">${esc(fmtC(r.amount))}</div></div>
@@ -862,7 +870,7 @@ function openBudgetDetail(id) {
     ${progress(r.ratio)}
     <div class="row-btns" style="margin:14px 0"><button class="btn" id="edit-b">Edit budget</button><button class="btn primary" id="add-b">+ Expense</button></div>
     <h3>Last 6 months</h3>${barChart(hist, { fmt: fmtS, height: 130 })}
-    <h3>${esc(monthLabel(ym))}</h3>${txList(list)}`);
+    <h3>${esc(periodLabel(ym))}</h3>${txList(list)}`);
   $('#edit-b', s.el).onclick = () => { s.close(); openBudgetForm(b); };
   $('#add-b', s.el).onclick = () => { s.close(); openTxForm(null, { type: 'expense', budgetId: b.id, categoryId: (b.categoryIds || [])[0] || '' }); };
 }
@@ -922,8 +930,12 @@ const actions = {
   'month-next': () => { ui.month = addMonths(ui.month, 1); render(); },
   'report-kind': (el) => {
     const k = el.dataset.v;
-    const base = ui.report.kind === 'day' ? ui.report.key : ui.report.kind === 'month' ? ui.report.key + (ui.report.key === thisMonth() ? todayISO().slice(7) : '-01') : (ui.report.key === thisYear() ? todayISO() : ui.report.key + '-01-01');
-    ui.report = { kind: k, key: k === 'day' ? base : k === 'month' ? base.slice(0, 7) : base.slice(0, 4) };
+    const { kind: was, key: wasKey } = ui.report;
+    const today = todayISO();
+    const base = was === 'day' ? wasKey
+      : was === 'month' ? (inKey(today, wasKey) ? today : periodStart(wasKey))
+        : (inKey(today, wasKey) ? today : periodStart(wasKey + '-01'));
+    ui.report = { kind: k, key: k === 'day' ? base : k === 'month' ? periodOf(base) : periodOf(base).slice(0, 4) };
     render();
   },
   'report-prev': () => { ui.report.key = prevKey(ui.report.kind, ui.report.key); render(); },
@@ -1017,7 +1029,10 @@ document.addEventListener('submit', (e) => {
     if (newName) ms.push({ id: uid(), name: newName, email: String(fd.get('m-email-new') || '').trim() });
     const currency = String(fd.get('currency') || 'SAR').trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) { toast('Currency must be a 3-letter code like SAR'); return; }
-    store.saveSettings({ householdName: String(fd.get('householdName') || '').trim(), currency, members: ms });
+    const day = Math.min(28, Math.max(1, Number(fd.get('cycleDay')) || 1));
+    store.saveSettings({ householdName: String(fd.get('householdName') || '').trim(), currency, members: ms, cycleDay: day, salaryStart: !!fd.get('salaryStart') });
+    ui.month = currentPeriod();
+    ui.report = { kind: 'month', key: currentPeriod() };
     toast('Settings saved');
   }
 });
@@ -1036,6 +1051,15 @@ function render() {
   const active = document.activeElement?.id;
   const caret = document.activeElement?.selectionStart;
   const y = window.scrollY;
+
+  // When a new budget month starts (e.g. the salary just came in), screens showing the
+  // current month move along with it; screens showing an older month stay where they are.
+  const cp = currentPeriod();
+  if (ui.lastCurrent && ui.lastCurrent !== cp) {
+    if (ui.month === ui.lastCurrent) ui.month = cp;
+    if (ui.report.kind === 'month' && ui.report.key === ui.lastCurrent) ui.report.key = cp;
+  }
+  ui.lastCurrent = cp;
 
   const views = { home: viewHome, activity: viewActivity, budgets: viewBudgets, reports: viewReports, accounts: viewAccounts, prefs: viewSettings, categories: viewCategories, setup: viewSetup };
   $('#view').innerHTML = views[view]();
@@ -1150,6 +1174,8 @@ async function boot() {
   }
 
   ready = true;
+  ui.month = currentPeriod();
+  ui.report = { kind: 'month', key: currentPeriod() };
   document.body.classList.remove('setup-mode');
   store.subscribe(render);
   window.addEventListener('hashchange', render);
