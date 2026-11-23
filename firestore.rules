@@ -1,0 +1,27 @@
+rules_version = '2';
+
+// Only the two of you can read or write the budget.
+// 1) Replace the two emails below with the emails you each sign in with.
+// 2) Firebase console → Firestore Database → Rules → paste this file → Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isFamily() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'husband@example.com',
+          'wife@example.com'
+        ];
+    }
+
+    match /households/{householdId}/{document=**} {
+      allow read, write: if isFamily();
+    }
+
+    // Everything else is locked.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
